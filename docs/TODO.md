@@ -5,3 +5,4 @@
 * [ ] 日次集計（ラベル別時間 + 根拠抽出）
 * [ ] `project.md` を用いたラベル付け（ルール → 類似度）
 * [ ] Chrome拡張で `browser_active_span` を送る
+* [ ] インストール方法をREADMEに追加
