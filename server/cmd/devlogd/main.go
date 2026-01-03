@@ -103,6 +103,16 @@ func parseTime(value string) error {
 	return err
 }
 
+func parseTimeValue(value string) (time.Time, error) {
+	if value == "" {
+		return time.Time{}, errors.New("empty time")
+	}
+	if t, err := time.Parse(time.RFC3339Nano, value); err == nil {
+		return t, nil
+	}
+	return time.Parse(time.RFC3339, value)
+}
+
 type eventStore struct {
 	db *sql.DB
 }
@@ -158,6 +168,85 @@ INSERT INTO events (
 		return errors.New("event_id already exists")
 	}
 	return err
+}
+
+func (s *eventStore) terminalDurationsByCWD(date string) (map[string]int64, error) {
+	rows, err := s.db.Query(`
+SELECT cwd, MIN(start_ts), MAX(end_ts)
+FROM events
+WHERE type = 'terminal_command' AND date(start_ts) = ?
+GROUP BY cwd
+`, date)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make(map[string]int64)
+	for rows.Next() {
+		var cwd string
+		var minStart string
+		var maxEnd string
+		if err := rows.Scan(&cwd, &minStart, &maxEnd); err != nil {
+			return nil, err
+		}
+		startTime, err := parseTimeValue(minStart)
+		if err != nil {
+			return nil, err
+		}
+		endTime, err := parseTimeValue(maxEnd)
+		if err != nil {
+			return nil, err
+		}
+		secs := int64(endTime.Sub(startTime).Seconds())
+		if secs < 0 {
+			secs = 0
+		}
+		out[cwd] = secs
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (s *eventStore) browserDurationsByURL(date string) (map[string]int64, error) {
+	rows, err := s.db.Query(`
+SELECT url, start_ts, end_ts
+FROM events
+WHERE type = 'browser_active_span' AND date(start_ts) = ?
+`, date)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make(map[string]int64)
+	for rows.Next() {
+		var url string
+		var startStr string
+		var endStr string
+		if err := rows.Scan(&url, &startStr, &endStr); err != nil {
+			return nil, err
+		}
+		startTime, err := parseTimeValue(startStr)
+		if err != nil {
+			return nil, err
+		}
+		endTime, err := parseTimeValue(endStr)
+		if err != nil {
+			return nil, err
+		}
+		secs := int64(endTime.Sub(startTime).Seconds())
+		if secs < 0 {
+			secs = 0
+		}
+		out[url] += secs
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (s *eventStore) close() error {
@@ -216,6 +305,40 @@ func main() {
 		}
 
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "event_id": ev.EventID})
+	})
+
+	mux.HandleFunc("/stats", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", http.MethodGet)
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+
+		date := r.URL.Query().Get("date")
+		if date == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "date is required (YYYY-MM-DD, UTC)"})
+			return
+		}
+		if _, err := time.Parse("2006-01-02", date); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "date must be YYYY-MM-DD (UTC)"})
+			return
+		}
+
+		terminal, err := store.terminalDurationsByCWD(date)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to compute terminal stats"})
+			return
+		}
+		browser, err := store.browserDurationsByURL(date)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to compute browser stats"})
+			return
+		}
+
+		writeJSON(w, http.StatusOK, map[string]any{
+			"terminal_command":    terminal,
+			"browser_active_span": browser,
+		})
 	})
 
 	server := &http.Server{
