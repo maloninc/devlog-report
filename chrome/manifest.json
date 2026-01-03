@@ -1,0 +1,11 @@
+{
+  "name": "DevLog Report",
+  "description": "Local-only time tracking for engineers via browser activity spans.",
+  "version": "0.1.0",
+  "manifest_version": 3,
+  "permissions": ["tabs", "idle", "storage"],
+  "host_permissions": ["http://127.0.0.1:8787/*"],
+  "background": {
+    "service_worker": "src/background.js"
+  }
+}
