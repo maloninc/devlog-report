@@ -1,126 +1,123 @@
-# DevLog Report とは？
+# What is DevLog Report?
 
-DevLog Report は、macOS の行動ログ（Chrome のURL / zsh コマンド）から「1日の仕事配分」を推定する、**ローカル完結のエンジニア向けタイムトラッキング**仕組みです。  
-このREADMEは、**「Chromeで見ていたURL」** と **「zshで実行したコマンド」** をローカルに記録し、`project.md`（仕事ラベルと説明）を用いて **「どの仕事にどれだけ時間を割いたか」** を推定・可視化する設計方針をまとめたものです。
-
----
-
-# 目的
-
-- 1日の行動を **作業ブロック** として復元し、
-  - どのプロジェクト／仕事（ラベル）に
-  - どれくらい時間を使ったか
-  - 何をしていたか（根拠URL/コマンド）
-  を推定して日次レポート化する。
-- 可能な限り **ローカル完結**（ログサーバもlocalhostで動かす）。
-- 「ブラウザ滞在時間」など、履歴DBだけでは弱い部分を **拡張機能で補強**する。
+DevLog Report is a **local-only time tracking system for engineers** that estimates how you spent your day based on macOS activity logs (Chrome URLs and zsh commands).
+This README summarizes the design for recording **URLs viewed in Chrome** and **commands executed in zsh** locally, then using `project.md` (labels and descriptions) to estimate and visualize **how much time went to each project**.
 
 ---
 
-# 前提・環境
+# Goals
+
+- Reconstruct a day's activity as **work blocks**, then estimate and report:
+  - which project / label
+  - how much time was spent
+  - what was done (evidence URLs/commands)
+- Keep everything **local-only** (log server runs on localhost).
+- Compensate for weak signals in browser history (e.g., dwell time) with a **Chrome extension**.
+
+---
+
+# Assumptions / Environment
 
 - OS: macOS
-- ブラウザ: Google Chrome（Manifest V3 拡張）
-- ターミナル環境: zsh
-- ログ収集先: ローカルログサーバ（localhost）
-- プロジェクト定義: `project.md` に以下を保持している前提
-  - プロジェクト名（例: `project-alpha`, `ops`, `recruiting` など）
-  - プロジェクトID（例：`pj-001`, `pj-xyz` など）
-  - 各ラベルの説明（自然言語）
-  - 任意で、URL/コマンドのルール（推奨）
+- Browser: Google Chrome (Manifest V3 extension)
+- Terminal: zsh
+- Log sink: local log server (localhost)
+- Project definition: `project.md` includes
+  - project name (e.g. `project-alpha`, `ops`, `recruiting`)
+  - project ID (e.g. `pj-001`, `pj-xyz`)
+  - label description (natural language)
+  - optional URL/command rules (recommended)
 
 ---
 
-# 全体アーキテクチャ（概要）
+# Architecture (Overview)
 
 ```
 [Chrome Extension]  ──HTTP──►  [Local Log Server]  ─►  [SQLite]
       │                                  │
-      └─(active span生成)                └─(日次集計/推論ジョブ)
+      └─(active span creation)           └─(daily aggregation/inference)
 [zsh hooks]         ──HTTP──►              │
                                          ▼
                                [Daily Report (Markdown/HTML)]
 ```
 
-## 収集するログの柱
-1. **ブラウザ（Chrome拡張）**
-   - 「いつ、どのURLを、アクティブに見ていたか」を区間（span）として記録
-2. **ターミナル（zshフック）**
-   - 「いつ、どのコマンドを、どのディレクトリで、実行したか」を記録
+## Log sources
+1. **Browser (Chrome extension)**
+   - Records spans of **active URL viewing**
+2. **Terminal (zsh hooks)**
+   - Records **commands executed** and **current directory**
 
 ---
 
-# 実装方針
+# Implementation Plan
 
-## 1. ローカルログサーバ
+## 1. Local log server
 
-## 役割
-- Chrome拡張 / zshフック からのイベントを受け取り、永続化する。
-- 収集時のネットワーク失敗は少ない想定だが、各クライアント側にバッファを持たせる。
+## Role
+- Receive events from Chrome extension / zsh hooks and persist them.
+- Network failures are unlikely, but clients should buffer if needed.
 
-## 推奨要件
-- 受信: `POST /events`（JSON）
-- 返信: 200/4xx/5xx（クライアントがリトライ判断）
-- 永続化:
-  - 推奨: SQLite（後で集計・検索しやすい）
-- セキュリティ:
-  - バインドは `127.0.0.1` のみに限定
+## Recommended requirements
+- Receive: `POST /events` (JSON)
+- Response: 200/4xx/5xx (clients decide retry)
+- Persistence:
+  - Recommended: SQLite (easier to aggregate/search)
+- Security:
+  - Bind only to `127.0.0.1`
 
-- 受信: `POST /stats?date=yyyy-mmd-dd` (project.md)
-- 返信: dateで指定された日付について、SQLite上のデータの統計情報とproject.mdをLLMに渡して各プロジェクトの投下時間をプロジェクトIDごとに返す
+- Receive: `GET /stats?date=YYYY-MM-DD` (UTC)
+- Response: returns stats for the specified date from SQLite
 
 ---
 
-## 2. Chrome拡張（Manifest V3）
+## 2. Chrome Extension (Manifest V3)
 
-## 目的
-- ブラウザ履歴DBでは弱い「滞在時間」を、拡張側で **アクティブ区間（active span）** として確定して送る。
+## Purpose
+- Browser history alone is weak for dwell time; the extension determines **active spans** and sends them.
 
-## 収集したいイベント（最小セット）
-- アクティブタブ切替（見始め）
-- URL遷移（ページ移動）
-- ChromeウィンドウのフォーカスIN/OUT（見ていない時間を切る）
-- idle/locked（席を外した時間を切る）
+## Minimum events to capture
+- Active tab switch (start viewing)
+- URL navigation (page change)
+- Chrome window focus in/out (exclude unfocused time)
+- idle/locked (exclude away time)
 
-## 実装方針
-- イベント駆動でspanを確定
+## Implementation concept
+- Finalize spans on events
 
-## span生成の基本ロジック（例）
-- 「現在アクティブなURL」を `current_span` として保持
-- 以下のイベントで `current_span` を確定して送信し、新しいspanを開始
-  - タブ切替
-  - URL遷移（コミット）
-  - ウィンドウフォーカスOUT / idle / lock
-- spanの最小フィールド:
+## Span generation logic (example)
+- Keep current active URL as `current_span`
+- Finalize `current_span` on:
+  - tab switch
+  - URL commit
+  - window focus out / idle / lock
+- Minimum fields for a span:
   - `title`, `start_ts`, `end_ts`, `url`
 
 ---
 
-## 3. zsh でのコマンド記録（拡張ではなくフックで実装）
+## 3. Command logging in zsh (via hooks)
 
-## 方針
-ターミナルはChromeのような「拡張エコシステム」が一般的ではないため、**zshフック（precmd）**で「コマンド境界」を確実に取る。
+## Approach
+Terminal lacks a standard extension ecosystem, so use **zsh hooks (precmd)** to capture command boundaries.
 
-## 収集したい情報（最小セット）
-- 実行時刻
-- 実行コマンド文字列
-- カレントディレクトリ（cwd）
+## Minimum data to record
+- execution timestamps
+- command string
+- current working directory (cwd)
 
-## フックの概念
-- `precmd`: コマンド実行後（次のプロンプトが出る直前）
+## Hook concept
+- `precmd`: after command execution (just before prompt)
 
-> 補足: zshの `EXTENDED_HISTORY` を有効にすると、履歴に開始時刻と経過時間を埋め込めるが、
-> 「書き出しタイミング」や「セッション跨ぎ」の癖があるため、**リアルタイム送信（フック）が基本**。
+> Note: zsh `EXTENDED_HISTORY` can embed start time and duration in history, but it has quirks with write timing and session boundaries. Real-time hooks are the primary approach.
 
 ---
 
-# イベントスキーマ（例）
+# Event schema (examples)
 
-## 共通フィールド
+## Common fields
 - `event_id`: UUID
 - `source`: `chrome` / `zsh`
-- `ts`: イベント発生時刻（ISO8601推奨）
-- `schema_version`: 例 `1`
+- `schema_version`: e.g. `1`
 
 ## 1) browser_active_span
 ```json
@@ -131,7 +128,7 @@ DevLog Report は、macOS の行動ログ（Chrome のURL / zsh コマンド）�
   "start_ts": "2026-01-03T10:00:00+09:00",
   "end_ts":   "2026-01-03T10:12:34+09:00",
   "url": "https://example.com/path",
-  "title": "Example",
+  "title": "Example"
 }
 ```
 
@@ -144,57 +141,122 @@ DevLog Report は、macOS の行動ログ（Chrome のURL / zsh コマンド）�
   "start_ts": "2026-01-03T10:13:10+09:00",
   "end_ts":   "2026-01-03T10:13:12+09:00",
   "cwd": "/Users/me/repos/project-alpha",
-  "command": "git status",
+  "command": "git status"
 }
 ```
 
 ---
 
-# 日次レポートの出力イメージ（例）
+# devlogd API
 
-- 日付: 2026-01-03
-- ラベル別時間
+## POST /events
+
+### Request
+- Content-Type: `application/json`
+- Body: event JSON
+
+```json
+{
+  "type": "browser_active_span",
+  "source": "chrome",
+  "event_id": "uuid",
+  "schema_version": 1,
+  "start_ts": "2026-01-03T10:00:00Z",
+  "end_ts": "2026-01-03T10:12:34Z",
+  "url": "https://example.com/path",
+  "title": "Example"
+}
+```
+
+```json
+{
+  "type": "terminal_command",
+  "source": "zsh",
+  "event_id": "uuid",
+  "schema_version": 1,
+  "start_ts": "2026-01-03T10:13:10Z",
+  "end_ts": "2026-01-03T10:13:12Z",
+  "cwd": "/Users/me/repos/project-alpha",
+  "command": "git status"
+}
+```
+
+### Response
+- `200 OK` / `409 Conflict` / `400 Bad Request`
+
+```json
+{ "status": "ok", "event_id": "uuid" }
+```
+
+## GET /stats?date=YYYY-MM-DD
+
+### Request
+- Query: `date` is a UTC date
+
+### Response
+- `200 OK` / `400 Bad Request`
+- Aggregated seconds
+
+```json
+{
+  "terminal_command": {
+    "/path/to/somewhere": 100,
+    "/path/to/elsewhere": 120
+  },
+  "browser_active_span": {
+    "https://example.com/path": 111,
+    "https://hoge.com/path": 123
+  }
+}
+```
+
+---
+
+# Daily report example (output)
+
+- Date: 2026-01-03
+- Time by label
   - project-alpha: 3h 20m
   - ops: 1h 10m
   - recruiting: 40m
-- 根拠（上位）
+- Evidence (top)
   - project-alpha:
     - URL: `github.com/...`, `jira.company/...`
     - CMD: `pytest ...`, `docker compose up`, `git rebase ...`
-- サマリ（自然言語）
-  - 午前は project-alpha の開発とテスト、午後は ops の対応、その後 recruiting の候補者確認…等
+- Summary (natural language)
+  - Morning: project-alpha development and testing. Afternoon: ops work, then recruiting candidate review.
 
 ---
 
-# 最小実装ロードマップ
+# Minimal roadmap
 
-1. ローカルログサーバ（`POST /events` + JSONL保存）
-2. Chrome拡張で `browser_active_span` を送る
-3. zshフックで `terminal_command` を送る（失敗時はバッファ）
-4. 日次集計（ラベル別時間 + 根拠抽出）
-5. `project.md` を用いたラベル付け（ルール → 類似度）
+1. Local log server (`POST /events` + SQLite persistence)
+2. Chrome extension sends `browser_active_span`
+3. zsh hook sends `terminal_command` (buffer on failure)
+4. Daily aggregation (time by label + evidence extraction)
+5. Labeling via `project.md` (rules → similarity)
 
 ---
 
-# project.md の推奨フォーマット（例）
+# Recommended `project.md` format (example)
 
 ```md
 # project-alpha
-プロジェクトID: pj-001
-説明: 検索品質改善の開発。
+Project ID: pj-001
+Description: Improve search quality.
 repo: project-alpha.github.com
 cwd: /repos/project-alpha
 
 # ops
-プロジェクトID: pj-ops
-説明: 本番運用、障害対応、監視。
+Project ID: pj-ops
+Description: Production ops, incident response, monitoring.
 repo: ops.github.com
 cwd: /repos/ops
 ```
 
 ---
 
-# ビルド方法
+# Build
 
 ## devlogd
 
@@ -204,5 +266,21 @@ go mod tidy
 go build ./cmd/devlogd
 ```
 
-# ライセンス
+## zsh hook
+
+```shell
+cd zsh
+./install.sh
+```
+
+## Chrome extension
+
+No build required. Load it into Chrome.
+
+1. Open `chrome://extensions/`
+2. Turn on Developer mode (top right)
+3. Click "Load unpacked"
+4. Select the `chrome/` directory
+
+# License
 MIT
