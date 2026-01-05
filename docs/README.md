@@ -1,7 +1,7 @@
 # What is DevLog Report?
 
-DevLog Report is a **local-only time tracking system for engineers** that estimates how you spent your day based on macOS activity logs (Chrome URLs and zsh commands).
-This README summarizes the design for recording **URLs viewed in Chrome** and **commands executed in zsh** locally, then using `project.md` (labels and descriptions) to estimate and visualize **how much time went to each project**.
+DevLog Report is a **local-only time tracking system for engineers** that estimates how you spent your day based on macOS activity logs (Chrome page titles/URLs and zsh commands).
+This README summarizes the design for recording **pages viewed in Chrome (title + URL)** and **commands executed in zsh** locally, then using `project.md` (labels and descriptions) to estimate and visualize **how much time went to each project**.
 
 ---
 
@@ -43,7 +43,7 @@ This README summarizes the design for recording **URLs viewed in Chrome** and **
 
 ## Log sources
 1. **Browser (Chrome extension)**
-   - Records spans of **active URL viewing**
+   - Records spans of **active page viewing** (title + URL)
 2. **Terminal (zsh hooks)**
    - Records **commands executed** and **current directory**
 
@@ -85,7 +85,7 @@ This README summarizes the design for recording **URLs viewed in Chrome** and **
 - Finalize spans on events
 
 ## Span generation logic (example)
-- Keep current active URL as `current_span`
+- Keep current active page (title + URL) as `current_span`
 - Finalize `current_span` on:
   - tab switch
   - URL commit
@@ -195,7 +195,7 @@ Terminal lacks a standard extension ecosystem, so use **zsh hooks (precmd)** to 
 
 ### Response
 - `200 OK` / `400 Bad Request`
-- Aggregated seconds
+- Aggregated seconds (browser spans are grouped by title)
 
 ```json
 {
@@ -204,8 +204,8 @@ Terminal lacks a standard extension ecosystem, so use **zsh hooks (precmd)** to 
     "/path/to/elsewhere": 120
   },
   "browser_active_span": {
-    "https://example.com/path": 111,
-    "https://hoge.com/path": 123
+    "Example": 111,
+    "Hoge": 123
   }
 }
 ```
@@ -219,9 +219,9 @@ Terminal lacks a standard extension ecosystem, so use **zsh hooks (precmd)** to 
   - project-alpha: 3h 20m
   - ops: 1h 10m
   - recruiting: 40m
-- Evidence (top)
+  - Evidence (top)
   - project-alpha:
-    - URL: `github.com/...`, `jira.company/...`
+    - Title: `GitHub`, `Jira`
     - CMD: `pytest ...`, `docker compose up`, `git rebase ...`
 - Summary (natural language)
   - Morning: project-alpha development and testing. Afternoon: ops work, then recruiting candidate review.

@@ -210,9 +210,9 @@ GROUP BY cwd
 	return out, nil
 }
 
-func (s *eventStore) browserDurationsByURL(date string) (map[string]int64, error) {
+func (s *eventStore) browserDurationsByTitle(date string) (map[string]int64, error) {
 	rows, err := s.db.Query(`
-SELECT url, start_ts, end_ts
+SELECT title, start_ts, end_ts
 FROM events
 WHERE type = 'browser_active_span' AND date(start_ts) = ?
 `, date)
@@ -223,10 +223,10 @@ WHERE type = 'browser_active_span' AND date(start_ts) = ?
 
 	out := make(map[string]int64)
 	for rows.Next() {
-		var url string
+		var title string
 		var startStr string
 		var endStr string
-		if err := rows.Scan(&url, &startStr, &endStr); err != nil {
+		if err := rows.Scan(&title, &startStr, &endStr); err != nil {
 			return nil, err
 		}
 		startTime, err := parseTimeValue(startStr)
@@ -241,7 +241,7 @@ WHERE type = 'browser_active_span' AND date(start_ts) = ?
 		if secs < 0 {
 			secs = 0
 		}
-		out[url] += secs
+		out[title] += secs
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -329,7 +329,7 @@ func main() {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to compute terminal stats"})
 			return
 		}
-		browser, err := store.browserDurationsByURL(date)
+	browser, err := store.browserDurationsByTitle(date)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to compute browser stats"})
 			return

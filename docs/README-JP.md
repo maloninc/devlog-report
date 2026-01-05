@@ -1,7 +1,7 @@
 # DevLog Report とは？
 
-DevLog Report は、macOS の行動ログ（Chrome のURL / zsh コマンド）から「1日の仕事配分」を推定する、**ローカル完結のエンジニア向けタイムトラッキング**仕組みです。  
-このREADMEは、**「Chromeで見ていたURL」** と **「zshで実行したコマンド」** をローカルに記録し、`project.md`（仕事ラベルと説明）を用いて **「どの仕事にどれだけ時間を割いたか」** を推定・可視化する設計方針をまとめたものです。
+DevLog Report は、macOS の行動ログ（Chrome のページタイトル/URL / zsh コマンド）から「1日の仕事配分」を推定する、**ローカル完結のエンジニア向けタイムトラッキング**仕組みです。  
+このREADMEは、**「Chromeで見ていたページ（title + URL）」** と **「zshで実行したコマンド」** をローカルに記録し、`project.md`（仕事ラベルと説明）を用いて **「どの仕事にどれだけ時間を割いたか」** を推定・可視化する設計方針をまとめたものです。
 
 ---
 
@@ -44,7 +44,7 @@ DevLog Report は、macOS の行動ログ（Chrome のURL / zsh コマンド）�
 
 ## 収集するログの柱
 1. **ブラウザ（Chrome拡張）**
-   - 「いつ、どのURLを、アクティブに見ていたか」を区間（span）として記録
+   - 「いつ、どのページを（title + URL）、アクティブに見ていたか」を区間（span）として記録
 2. **ターミナル（zshフック）**
    - 「いつ、どのコマンドを、どのディレクトリで、実行したか」を記録
 
@@ -86,7 +86,7 @@ DevLog Report は、macOS の行動ログ（Chrome のURL / zsh コマンド）�
 - イベント駆動でspanを確定
 
 ## span生成の基本ロジック（例）
-- 「現在アクティブなURL」を `current_span` として保持
+- 「現在アクティブなページ（title + URL）」を `current_span` として保持
 - 以下のイベントで `current_span` を確定して送信し、新しいspanを開始
   - タブ切替
   - URL遷移（コミット）
@@ -197,7 +197,7 @@ DevLog Report は、macOS の行動ログ（Chrome のURL / zsh コマンド）�
 
 ### Response
 - `200 OK` / `400 Bad Request`
-- 秒単位の集計結果
+- 秒単位の集計結果（ブラウザは title 単位）
 
 ```json
 {
@@ -206,8 +206,8 @@ DevLog Report は、macOS の行動ログ（Chrome のURL / zsh コマンド）�
     "/path/to/elsewhere": 120
   },
   "browser_active_span": {
-    "https://example.com/path": 111,
-    "https://hoge.com/path": 123
+    "Example": 111,
+    "Hoge": 123
   }
 }
 ```
@@ -223,7 +223,7 @@ DevLog Report は、macOS の行動ログ（Chrome のURL / zsh コマンド）�
   - recruiting: 40m
 - 根拠（上位）
   - project-alpha:
-    - URL: `github.com/...`, `jira.company/...`
+    - Title: `GitHub`, `Jira`
     - CMD: `pytest ...`, `docker compose up`, `git rebase ...`
 - サマリ（自然言語）
   - 午前は project-alpha の開発とテスト、午後は ops の対応、その後 recruiting の候補者確認…等
