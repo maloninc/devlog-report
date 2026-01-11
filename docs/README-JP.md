@@ -192,8 +192,9 @@ DevLog Report は、macOS の行動ログ（Chrome のページタイトル/URL 
 
 ### Request
 - Query: `date` は UTC の日付
+- Optional: `mode=json`（省略 or `mode=md` で Markdown）
 
-### Response
+### Response（JSON）
 - `200 OK` / `400 Bad Request`
 - 秒単位の集計結果（ブラウザは title 単位）
 
@@ -223,6 +224,24 @@ DevLog Report は、macOS の行動ログ（Chrome のページタイトル/URL 
     }
   }
 }
+```
+
+### Response（Markdown）
+
+```md
+# Project Summary
+| Project   | Time(min) |
+| --------- | --------- |
+| Project A | 120       |
+| Project B |  90       |
+| Other     |  60       |
+
+# Others List
+| Others    | Type     | Time(min) |
+| --------- | -------- | --------- |
+| Hogehoge  | browser  |  90       |
+| Fugafuga  | browser  |  60       |
+| Brabra    | terminal |  20       |
 ```
 
 ---

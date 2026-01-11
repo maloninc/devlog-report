@@ -1,5 +1,5 @@
 projects:
-  - name: 開発
+  - name: 開発PJ
     match:
       browser:
         title:
@@ -16,7 +16,6 @@ projects:
     match:
       browser:
         title:
-          - ".*カレンダー.*"
           - ".*Todoist.*"
       terminal:
         cwd:

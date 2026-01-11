@@ -7,13 +7,17 @@ import (
 	"errors"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/mattn/go-runewidth"
 	"gopkg.in/yaml.v3"
 	_ "modernc.org/sqlite"
 )
@@ -289,6 +293,12 @@ func writeJSON(w http.ResponseWriter, status int, payload any) {
 	_ = enc.Encode(payload)
 }
 
+func writeMarkdown(w http.ResponseWriter, status int, body string) {
+	w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+	w.WriteHeader(status)
+	_, _ = w.Write([]byte(body))
+}
+
 func loadProjectsConfig(path string) (ProjectsConfig, error) {
 	var cfg ProjectsConfig
 	data, err := os.ReadFile(path)
@@ -386,6 +396,129 @@ func classifyProjects(
 	}
 
 	return projectTotals, project_others, nil
+}
+
+type projectRow struct {
+	name    string
+	seconds int64
+}
+
+type otherRow struct {
+	name    string
+	typ     string
+	seconds int64
+}
+
+const (
+	markdownNameWidth = 60
+	markdownTypeWidth = 8
+	markdownTimeWidth = 9
+)
+
+func ceilMinutes(seconds int64) int64 {
+	if seconds <= 0 {
+		return 0
+	}
+	return int64(math.Ceil(float64(seconds) / 60.0))
+}
+
+func padRightWidth(value string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	if runewidth.StringWidth(value) >= width {
+		return runewidth.Truncate(value, width, "")
+	}
+	return value + strings.Repeat(" ", width-runewidth.StringWidth(value))
+}
+
+func padLeftWidth(value string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	if runewidth.StringWidth(value) >= width {
+		return runewidth.Truncate(value, width, "")
+	}
+	return strings.Repeat(" ", width-runewidth.StringWidth(value)) + value
+}
+
+func renderStatsMarkdown(
+	projects map[string]int64,
+	projectOthers map[string]map[string]int64,
+) string {
+	projectRows := make([]projectRow, 0, len(projects))
+	for name, seconds := range projects {
+		projectRows = append(projectRows, projectRow{name: name, seconds: seconds})
+	}
+	sort.Slice(projectRows, func(i, j int) bool {
+		if projectRows[i].seconds != projectRows[j].seconds {
+			return projectRows[i].seconds > projectRows[j].seconds
+		}
+		return projectRows[i].name < projectRows[j].name
+	})
+
+	otherRows := make([]otherRow, 0)
+	for typ, items := range projectOthers {
+		for name, seconds := range items {
+			otherRows = append(otherRows, otherRow{name: name, typ: typ, seconds: seconds})
+		}
+	}
+	sort.Slice(otherRows, func(i, j int) bool {
+		if otherRows[i].seconds != otherRows[j].seconds {
+			return otherRows[i].seconds > otherRows[j].seconds
+		}
+		if otherRows[i].name != otherRows[j].name {
+			return otherRows[i].name < otherRows[j].name
+		}
+		return otherRows[i].typ < otherRows[j].typ
+	})
+
+	var b strings.Builder
+	b.WriteString("# Project Summary\n\n")
+	b.WriteString("| Project")
+	b.WriteString(strings.Repeat(" ", markdownNameWidth-7))
+	b.WriteString(" | Time(min) |\n")
+	b.WriteString(strings.Repeat(" ", markdownTimeWidth-9))
+	b.WriteString("| ")
+	b.WriteString(strings.Repeat("-", markdownNameWidth))
+	b.WriteString(" | ")
+	b.WriteString(strings.Repeat("-", markdownTimeWidth))
+	b.WriteString(" |\n")
+	for _, row := range projectRows {
+		b.WriteString("| ")
+		b.WriteString(padRightWidth(row.name, markdownNameWidth))
+		b.WriteString(" | ")
+		b.WriteString(padLeftWidth(strconv.FormatInt(ceilMinutes(row.seconds), 10), markdownTimeWidth))
+		b.WriteString(" |\n")
+	}
+
+	b.WriteString("\n")
+	b.WriteString("# Others List\n\n")
+	b.WriteString("| Others")
+	b.WriteString(strings.Repeat(" ", markdownNameWidth-6))
+	b.WriteString(" | Type")
+	b.WriteString(strings.Repeat(" ", markdownTypeWidth-4))
+	b.WriteString(" | Time(min")
+	b.WriteString(strings.Repeat(" ", markdownTimeWidth-8))
+	b.WriteString(") |\n")
+	b.WriteString("| ")
+	b.WriteString(strings.Repeat("-", markdownNameWidth))
+	b.WriteString(" | ")
+	b.WriteString(strings.Repeat("-", markdownTypeWidth))
+	b.WriteString(" | ")
+	b.WriteString(strings.Repeat("-", markdownTimeWidth))
+	b.WriteString(" |\n")
+	for _, row := range otherRows {
+		b.WriteString("| ")
+		b.WriteString(padRightWidth(row.name, markdownNameWidth))
+		b.WriteString(" | ")
+		b.WriteString(padRightWidth(row.typ, markdownTypeWidth))
+		b.WriteString(" | ")
+		b.WriteString(padLeftWidth(strconv.FormatInt(ceilMinutes(row.seconds), 10), markdownTimeWidth))
+		b.WriteString(" |\n")
+	}
+
+	return b.String()
 }
 
 func main() {
@@ -491,6 +624,17 @@ func main() {
 			}
 			project_others["browser"] = browser
 			project_others["terminal"] = terminal
+		}
+
+		mode := r.URL.Query().Get("mode")
+		if mode == "" || mode == "md" {
+			body := renderStatsMarkdown(projectsTotals, project_others)
+			writeMarkdown(w, http.StatusOK, body)
+			return
+		}
+		if mode != "json" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "mode must be 'json' or 'md'"})
+			return
 		}
 
 		writeJSON(w, http.StatusOK, map[string]any{

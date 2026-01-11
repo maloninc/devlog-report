@@ -190,8 +190,9 @@ Terminal lacks a standard extension ecosystem, so use **zsh hooks (precmd)** to 
 
 ### Request
 - Query: `date` is a UTC date
+- Optional: `mode=json` (default is Markdown when omitted or `mode=md`)
 
-### Response
+### Response (JSON)
 - `200 OK` / `400 Bad Request`
 - Aggregated seconds (browser spans are grouped by title)
 
@@ -221,6 +222,24 @@ Terminal lacks a standard extension ecosystem, so use **zsh hooks (precmd)** to 
     }
   }
 }
+```
+
+### Response (Markdown)
+
+```md
+# Project Summary
+| Project   | Time(min) |
+| --------- | --------- |
+| Project A | 120       |
+| Project B |  90       |
+| Other     |  60       |
+
+# Others List
+| Others    | Type     | Time(min) |
+| --------- | -------- | --------- |
+| Hogehoge  | browser  |  90       |
+| Fugafuga  | browser  |  60       |
+| Brabra    | terminal |  20       |
 ```
 
 ---
