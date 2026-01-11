@@ -1,7 +1,7 @@
 # What is DevLog Report?
 
 DevLog Report is a **local-only time tracking system for engineers** that estimates how you spent your day based on macOS activity logs (Chrome page titles/URLs and zsh commands).
-This README summarizes the design for recording **pages viewed in Chrome (title + URL)** and **commands executed in zsh** locally, then using `project.md` (labels and descriptions) to estimate and visualize **how much time went to each project**.
+This README summarizes the design for recording **pages viewed in Chrome (title + URL)** and **commands executed in zsh** locally, then using `projects.yaml` (labels and matching rules) to estimate and visualize **how much time went to each project**.
 
 ---
 
@@ -22,11 +22,9 @@ This README summarizes the design for recording **pages viewed in Chrome (title 
 - Browser: Google Chrome (Manifest V3 extension)
 - Terminal: zsh
 - Log sink: local log server (localhost)
-- Project definition: `project.md` includes
+- Project definition: `projects.yaml` includes
   - project name (e.g. `project-alpha`, `ops`, `recruiting`)
-  - project ID (e.g. `pj-001`, `pj-xyz`)
-  - label description (natural language)
-  - optional URL/command rules (recommended)
+  - matching rules for browser titles and terminal CWDs
 
 ---
 
@@ -206,6 +204,21 @@ Terminal lacks a standard extension ecosystem, so use **zsh hooks (precmd)** to 
   "browser_active_span": {
     "Example": 111,
     "Hoge": 123
+  },
+  "projects": {
+    "PJ-A": 4,
+    "PJ-B": 3,
+    "Other": 10
+  },
+  "project_others": {
+    "browser": {
+      "Example": 2,
+      "Hoge": 3
+    },
+    "terminal": {
+      "/path/to/somewhere": 2,
+      "/path/to/elsewhere": 3
+    }
   }
 }
 ```
@@ -234,25 +247,35 @@ Terminal lacks a standard extension ecosystem, so use **zsh hooks (precmd)** to 
 2. Chrome extension sends `browser_active_span`
 3. zsh hook sends `terminal_command` (buffer on failure)
 4. Daily aggregation (time by label + evidence extraction)
-5. Labeling via `project.md` (rules → similarity)
+5. Labeling via `projects.yaml` (regex rules)
 
 ---
 
-# Recommended `project.md` format (example)
+# Recommended `projects.yaml` format (example)
 
-```md
-# project-alpha
-Project ID: pj-001
-Description: Improve search quality.
-repo: project-alpha.github.com
-cwd: /repos/project-alpha
+```yaml
+projects:
+  - name: project-alpha
+    match:
+      browser:
+        title:
+          - ".*GitHub.*"
+          - ".*Jira.*"
+      terminal:
+        cwd:
+          - ".*/repos/project-alpha.*"
 
-# ops
-Project ID: pj-ops
-Description: Production ops, incident response, monitoring.
-repo: ops.github.com
-cwd: /repos/ops
+  - name: ops
+    match:
+      browser:
+        title:
+          - ".*Datadog.*"
+      terminal:
+        cwd:
+          - ".*/repos/ops.*"
 ```
+
+Use `DEVLOG_PROJECTS_PATH` to change the file location (default: `./projects.yaml`).
 
 ---
 

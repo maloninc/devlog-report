@@ -1,0 +1,27 @@
+projects:
+  - name: 開発
+    match:
+      browser:
+        title:
+          - ".*GitHub.*"
+          - ".*Codex.*"
+        url:
+          - ".*github.com.*"
+      terminal:
+        cwd:
+          - ".*/dev/.*"
+        command:
+          - "^git "
+  - name: 企画
+    match:
+      browser:
+        title:
+          - ".*カレンダー.*"
+          - ".*Todoist.*"
+      terminal:
+        cwd:
+          - ".*/planning/.*"
+
+output:
+  include_other: true
+  other_name: other

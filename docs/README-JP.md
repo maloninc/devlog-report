@@ -1,7 +1,7 @@
 # DevLog Report とは？
 
 DevLog Report は、macOS の行動ログ（Chrome のページタイトル/URL / zsh コマンド）から「1日の仕事配分」を推定する、**ローカル完結のエンジニア向けタイムトラッキング**仕組みです。  
-このREADMEは、**「Chromeで見ていたページ（title + URL）」** と **「zshで実行したコマンド」** をローカルに記録し、`project.md`（仕事ラベルと説明）を用いて **「どの仕事にどれだけ時間を割いたか」** を推定・可視化する設計方針をまとめたものです。
+このREADMEは、**「Chromeで見ていたページ（title + URL）」** と **「zshで実行したコマンド」** をローカルに記録し、`projects.yaml`（仕事ラベルとマッチングルール）を用いて **「どの仕事にどれだけ時間を割いたか」** を推定・可視化する設計方針をまとめたものです。
 
 ---
 
@@ -23,11 +23,9 @@ DevLog Report は、macOS の行動ログ（Chrome のページタイトル/URL 
 - ブラウザ: Google Chrome（Manifest V3 拡張）
 - ターミナル環境: zsh
 - ログ収集先: ローカルログサーバ（localhost）
-- プロジェクト定義: `project.md` に以下を保持している前提
+- プロジェクト定義: `projects.yaml` に以下を保持している前提
   - プロジェクト名（例: `project-alpha`, `ops`, `recruiting` など）
-  - プロジェクトID（例：`pj-001`, `pj-xyz` など）
-  - 各ラベルの説明（自然言語）
-  - 任意で、URL/コマンドのルール（推奨）
+  - browserのtitle、terminalのcwdに対する正規表現ルール
 
 ---
 
@@ -208,6 +206,21 @@ DevLog Report は、macOS の行動ログ（Chrome のページタイトル/URL 
   "browser_active_span": {
     "Example": 111,
     "Hoge": 123
+  },
+  "projects": {
+    "PJ-A": 4,
+    "PJ-B": 3,
+    "Other": 10
+  },
+  "project_others": {
+    "browser": {
+      "brabra": 2,
+      "brabrabara": 3
+    },
+    "terminal": {
+      "hoge": 2,
+      "fuga": 3
+    }
   }
 }
 ```
@@ -236,25 +249,35 @@ DevLog Report は、macOS の行動ログ（Chrome のページタイトル/URL 
 2. Chrome拡張で `browser_active_span` を送る
 3. zshフックで `terminal_command` を送る（失敗時はバッファ）
 4. 日次集計（ラベル別時間 + 根拠抽出）
-5. `project.md` を用いたラベル付け（ルール → 類似度）
+5. `projects.yaml` を用いたラベル付け（正規表現ルール）
 
 ---
 
-# project.md の推奨フォーマット（例）
+# projects.yaml の推奨フォーマット（例）
 
-```md
-# project-alpha
-プロジェクトID: pj-001
-説明: 検索品質改善の開発。
-repo: project-alpha.github.com
-cwd: /repos/project-alpha
+```yaml
+projects:
+  - name: project-alpha
+    match:
+      browser:
+        title:
+          - ".*GitHub.*"
+          - ".*Jira.*"
+      terminal:
+        cwd:
+          - ".*/repos/project-alpha.*"
 
-# ops
-プロジェクトID: pj-ops
-説明: 本番運用、障害対応、監視。
-repo: ops.github.com
-cwd: /repos/ops
+  - name: ops
+    match:
+      browser:
+        title:
+          - ".*Datadog.*"
+      terminal:
+        cwd:
+          - ".*/repos/ops.*"
 ```
+
+ファイルの場所は `DEVLOG_PROJECTS_PATH` で変更できます（デフォルト: `./projects.yaml`）。
 
 ---
 

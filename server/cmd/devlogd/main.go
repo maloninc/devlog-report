@@ -10,9 +10,11 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
+	"gopkg.in/yaml.v3"
 	_ "modernc.org/sqlite"
 )
 
@@ -117,6 +119,28 @@ type eventStore struct {
 	db *sql.DB
 }
 
+type ProjectsConfig struct {
+	Projects []ProjectConfig `yaml:"projects"`
+}
+
+type ProjectConfig struct {
+	Name  string       `yaml:"name"`
+	Match ProjectMatch `yaml:"match"`
+}
+
+type ProjectMatch struct {
+	Browser  BrowserMatch  `yaml:"browser"`
+	Terminal TerminalMatch `yaml:"terminal"`
+}
+
+type BrowserMatch struct {
+	Title []string `yaml:"title"`
+}
+
+type TerminalMatch struct {
+	CWD []string `yaml:"cwd"`
+}
+
 func newEventStore(path string) (*eventStore, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, err
@@ -212,7 +236,7 @@ GROUP BY cwd
 
 func (s *eventStore) browserDurationsByTitle(date string) (map[string]int64, error) {
 	rows, err := s.db.Query(`
-SELECT title, start_ts, end_ts
+SELECT title, url, start_ts, end_ts
 FROM events
 WHERE type = 'browser_active_span' AND date(start_ts) = ?
 `, date)
@@ -224,10 +248,15 @@ WHERE type = 'browser_active_span' AND date(start_ts) = ?
 	out := make(map[string]int64)
 	for rows.Next() {
 		var title string
+		var url string
 		var startStr string
 		var endStr string
-		if err := rows.Scan(&title, &startStr, &endStr); err != nil {
+		if err := rows.Scan(&title, &url, &startStr, &endStr); err != nil {
 			return nil, err
+		}
+		key := strings.TrimSpace(title)
+		if key == "" {
+			key = url
 		}
 		startTime, err := parseTimeValue(startStr)
 		if err != nil {
@@ -241,7 +270,7 @@ WHERE type = 'browser_active_span' AND date(start_ts) = ?
 		if secs < 0 {
 			secs = 0
 		}
-		out[title] += secs
+		out[key] += secs
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -260,9 +289,109 @@ func writeJSON(w http.ResponseWriter, status int, payload any) {
 	_ = enc.Encode(payload)
 }
 
+func loadProjectsConfig(path string) (ProjectsConfig, error) {
+	var cfg ProjectsConfig
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return cfg, err
+	}
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return cfg, err
+	}
+	return cfg, nil
+}
+
+func classifyProjects(
+	terminal map[string]int64,
+	browser map[string]int64,
+	cfg ProjectsConfig,
+) (map[string]int64, map[string]map[string]int64, error) {
+	projectTotals := make(map[string]int64)
+	project_others := map[string]map[string]int64{
+		"browser":  {},
+		"terminal": {},
+	}
+
+	for _, project := range cfg.Projects {
+		projectTotals[project.Name] = 0
+	}
+
+	const otherName = "Other"
+	projectTotals[otherName] = 0
+
+	compiled := make([]struct {
+		name           string
+		browserTitleRe []*regexp.Regexp
+		terminalCwdRe  []*regexp.Regexp
+	}, 0, len(cfg.Projects))
+
+	for _, project := range cfg.Projects {
+		entry := struct {
+			name           string
+			browserTitleRe []*regexp.Regexp
+			terminalCwdRe  []*regexp.Regexp
+		}{name: project.Name}
+
+		for _, pattern := range project.Match.Browser.Title {
+			re, err := regexp.Compile(pattern)
+			if err != nil {
+				return nil, nil, err
+			}
+			entry.browserTitleRe = append(entry.browserTitleRe, re)
+		}
+
+		for _, pattern := range project.Match.Terminal.CWD {
+			re, err := regexp.Compile(pattern)
+			if err != nil {
+				return nil, nil, err
+			}
+			entry.terminalCwdRe = append(entry.terminalCwdRe, re)
+		}
+
+		compiled = append(compiled, entry)
+	}
+
+	assignBrowser := func(title string, seconds int64) {
+		for _, project := range compiled {
+			for _, re := range project.browserTitleRe {
+				if re.MatchString(title) {
+					projectTotals[project.name] += seconds
+					return
+				}
+			}
+		}
+		projectTotals[otherName] += seconds
+		project_others["browser"][title] += seconds
+	}
+
+	assignTerminal := func(cwd string, seconds int64) {
+		for _, project := range compiled {
+			for _, re := range project.terminalCwdRe {
+				if re.MatchString(cwd) {
+					projectTotals[project.name] += seconds
+					return
+				}
+			}
+		}
+		projectTotals[otherName] += seconds
+		project_others["terminal"][cwd] += seconds
+	}
+
+	for title, seconds := range browser {
+		assignBrowser(title, seconds)
+	}
+
+	for cwd, seconds := range terminal {
+		assignTerminal(cwd, seconds)
+	}
+
+	return projectTotals, project_others, nil
+}
+
 func main() {
 	addr := envOr("DEVLOG_ADDR", "127.0.0.1:8787")
 	dbPath := envOr("DEVLOG_DB_PATH", "./data/devlog.db")
+	projectsPath := envOr("DEVLOG_PROJECTS_PATH", "./projects.yaml")
 
 	store, err := newEventStore(dbPath)
 	if err != nil {
@@ -329,15 +458,46 @@ func main() {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to compute terminal stats"})
 			return
 		}
-	browser, err := store.browserDurationsByTitle(date)
+		browser, err := store.browserDurationsByTitle(date)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to compute browser stats"})
 			return
 		}
 
+		cfg, err := loadProjectsConfig(projectsPath)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load projects config"})
+			return
+		}
+
+		projectsTotals := map[string]int64{}
+		project_others := map[string]map[string]int64{
+			"browser":  {},
+			"terminal": {},
+		}
+		if err == nil {
+			projectsTotals, project_others, err = classifyProjects(terminal, browser, cfg)
+			if err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid projects config"})
+				return
+			}
+		} else {
+			projectsTotals["Other"] = 0
+			for _, seconds := range terminal {
+				projectsTotals["Other"] += seconds
+			}
+			for _, seconds := range browser {
+				projectsTotals["Other"] += seconds
+			}
+			project_others["browser"] = browser
+			project_others["terminal"] = terminal
+		}
+
 		writeJSON(w, http.StatusOK, map[string]any{
 			"terminal_command":    terminal,
 			"browser_active_span": browser,
+			"projects":            projectsTotals,
+			"project_others":      project_others,
 		})
 	})
 
