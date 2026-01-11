@@ -76,13 +76,14 @@ curl 'localhost:8787/stats?date=2026-01-05&project=Project-A'
 ### Request
 - Content-Type: `application/json`
 - Body: イベントJSON
+  - terminal_command の `end_ts` は `start_ts` と同一にする
 
 ```json
 {
   "type": "browser_active_span",
   "source": "chrome",
   "event_id": "uuid",
-  "schema_version": 1,
+  "schema_version": 2,
   "start_ts": "2026-01-03T10:00:00Z",
   "end_ts": "2026-01-03T10:12:34Z",
   "url": "https://example.com/path",
@@ -95,9 +96,9 @@ curl 'localhost:8787/stats?date=2026-01-05&project=Project-A'
   "type": "terminal_command",
   "source": "zsh",
   "event_id": "uuid",
-  "schema_version": 1,
+  "schema_version": 2,
   "start_ts": "2026-01-03T10:13:10Z",
-  "end_ts": "2026-01-03T10:13:12Z",
+  "end_ts": "2026-01-03T10:13:10Z",
   "cwd": "/Users/me/repos/project-alpha",
   "command": "git status"
 }

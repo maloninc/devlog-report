@@ -50,6 +50,10 @@ func normalizeEvent(b []byte) (Event, error) {
 		return Event{}, err
 	}
 
+	if ev.Type == "terminal_command" {
+		ev.EndTS = ev.StartTS
+	}
+
 	return ev, nil
 }
 
@@ -202,6 +206,46 @@ INSERT INTO events (
 		return errors.New("event_id already exists")
 	}
 	return err
+}
+
+func (s *eventStore) migrateSchemaV2() (bool, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return false, err
+	}
+
+	var exists int
+	if err := tx.QueryRow(`SELECT 1 FROM events WHERE schema_version = 1 LIMIT 1`).Scan(&exists); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			_ = tx.Rollback()
+			return false, nil
+		}
+		_ = tx.Rollback()
+		return false, err
+	}
+
+	if _, err := tx.Exec(`
+UPDATE events
+SET end_ts = start_ts
+WHERE schema_version = 1 AND type = 'terminal_command'
+`); err != nil {
+		_ = tx.Rollback()
+		return false, err
+	}
+
+	if _, err := tx.Exec(`
+UPDATE events
+SET schema_version = 2
+WHERE schema_version = 1
+`); err != nil {
+		_ = tx.Rollback()
+		return false, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func (s *eventStore) terminalDurationsByCWD(date string) (map[string]int64, error) {
@@ -644,6 +688,11 @@ func main() {
 	store, err := newEventStore(dbPath)
 	if err != nil {
 		log.Fatalf("failed to open event store: %v", err)
+	}
+	if migrated, err := store.migrateSchemaV2(); err != nil {
+		log.Fatalf("failed to migrate events: %v", err)
+	} else if migrated {
+		log.Printf("migration: schema_version 1 -> 2 completed")
 	}
 	defer func() {
 		if err := store.close(); err != nil {

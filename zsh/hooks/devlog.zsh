@@ -36,7 +36,7 @@ devlog_build_payload() {
   esc_cwd="$(devlog_json_escape "$cwd")"
   esc_cmd="$(devlog_json_escape "$cmd")"
 
-  printf '{"type":"terminal_command","source":"zsh","event_id":"%s","schema_version":1,"start_ts":"%s","end_ts":"%s","cwd":"%s","command":"%s"}' \
+  printf '{"type":"terminal_command","source":"zsh","event_id":"%s","schema_version":2,"start_ts":"%s","end_ts":"%s","cwd":"%s","command":"%s"}' \
     "$(devlog_uuid)" \
     "$start_ts" \
     "$end_ts" \
@@ -55,7 +55,7 @@ devlog_precmd() {
   fi
 
   local end_ts
-  end_ts="$(devlog_now_rfc3339)"
+  end_ts="$DEVLOG_LAST_START"
 
   local payload
   payload="$(devlog_build_payload "$DEVLOG_LAST_START" "$end_ts" "$PWD" "$DEVLOG_LAST_CMD")"

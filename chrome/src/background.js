@@ -31,7 +31,7 @@ function buildEvent(span, endTs) {
     type: "browser_active_span",
     source: "chrome",
     event_id: crypto.randomUUID(),
-    schema_version: 1,
+    schema_version: 2,
     start_ts: span.startTs,
     end_ts: endTs,
     url: span.url,
