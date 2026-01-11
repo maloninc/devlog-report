@@ -145,6 +145,12 @@ type TerminalMatch struct {
 	CWD []string `yaml:"cwd"`
 }
 
+type compiledProject struct {
+	name           string
+	browserTitleRe []*regexp.Regexp
+	terminalCwdRe  []*regexp.Regexp
+}
+
 func newEventStore(path string) (*eventStore, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, err
@@ -299,6 +305,12 @@ func writeMarkdown(w http.ResponseWriter, status int, body string) {
 	_, _ = w.Write([]byte(body))
 }
 
+func writePlainText(w http.ResponseWriter, status int, body string) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(status)
+	_, _ = w.Write([]byte(body))
+}
+
 func loadProjectsConfig(path string) (ProjectsConfig, error) {
 	var cfg ProjectsConfig
 	data, err := os.ReadFile(path)
@@ -309,6 +321,32 @@ func loadProjectsConfig(path string) (ProjectsConfig, error) {
 		return cfg, err
 	}
 	return cfg, nil
+}
+
+func compileProjectMatchers(cfg ProjectsConfig) ([]compiledProject, error) {
+	compiled := make([]compiledProject, 0, len(cfg.Projects))
+	for _, project := range cfg.Projects {
+		entry := compiledProject{name: project.Name}
+
+		for _, pattern := range project.Match.Browser.Title {
+			re, err := regexp.Compile(pattern)
+			if err != nil {
+				return nil, err
+			}
+			entry.browserTitleRe = append(entry.browserTitleRe, re)
+		}
+
+		for _, pattern := range project.Match.Terminal.CWD {
+			re, err := regexp.Compile(pattern)
+			if err != nil {
+				return nil, err
+			}
+			entry.terminalCwdRe = append(entry.terminalCwdRe, re)
+		}
+
+		compiled = append(compiled, entry)
+	}
+	return compiled, nil
 }
 
 func classifyProjects(
@@ -329,36 +367,9 @@ func classifyProjects(
 	const otherName = "Other"
 	projectTotals[otherName] = 0
 
-	compiled := make([]struct {
-		name           string
-		browserTitleRe []*regexp.Regexp
-		terminalCwdRe  []*regexp.Regexp
-	}, 0, len(cfg.Projects))
-
-	for _, project := range cfg.Projects {
-		entry := struct {
-			name           string
-			browserTitleRe []*regexp.Regexp
-			terminalCwdRe  []*regexp.Regexp
-		}{name: project.Name}
-
-		for _, pattern := range project.Match.Browser.Title {
-			re, err := regexp.Compile(pattern)
-			if err != nil {
-				return nil, nil, err
-			}
-			entry.browserTitleRe = append(entry.browserTitleRe, re)
-		}
-
-		for _, pattern := range project.Match.Terminal.CWD {
-			re, err := regexp.Compile(pattern)
-			if err != nil {
-				return nil, nil, err
-			}
-			entry.terminalCwdRe = append(entry.terminalCwdRe, re)
-		}
-
-		compiled = append(compiled, entry)
+	compiled, err := compileProjectMatchers(cfg)
+	if err != nil {
+		return nil, nil, err
 	}
 
 	assignBrowser := func(title string, seconds int64) {
@@ -415,11 +426,80 @@ const (
 	markdownTimeWidth = 9
 )
 
+type drillDownRow struct {
+	name    string
+	typ     string
+	seconds int64
+}
+
 func ceilMinutes(seconds int64) int64 {
 	if seconds <= 0 {
 		return 0
 	}
 	return int64(math.Ceil(float64(seconds) / 60.0))
+}
+
+func drillDownRows(
+	terminal map[string]int64,
+	browser map[string]int64,
+	cfg ProjectsConfig,
+	projectName string,
+) ([]drillDownRow, int64, bool, error) {
+	const otherName = "Other"
+	projectExists := projectName == otherName
+	for _, project := range cfg.Projects {
+		if project.Name == projectName {
+			projectExists = true
+			break
+		}
+	}
+	if !projectExists {
+		return nil, 0, false, nil
+	}
+
+	compiled, err := compileProjectMatchers(cfg)
+	if err != nil {
+		return nil, 0, false, err
+	}
+
+	matchBrowser := func(title string) string {
+		for _, project := range compiled {
+			for _, re := range project.browserTitleRe {
+				if re.MatchString(title) {
+					return project.name
+				}
+			}
+		}
+		return otherName
+	}
+
+	matchTerminal := func(cwd string) string {
+		for _, project := range compiled {
+			for _, re := range project.terminalCwdRe {
+				if re.MatchString(cwd) {
+					return project.name
+				}
+			}
+		}
+		return otherName
+	}
+
+	var rows []drillDownRow
+	var total int64
+	for title, seconds := range browser {
+		if matchBrowser(title) == projectName {
+			rows = append(rows, drillDownRow{name: title, typ: "browser", seconds: seconds})
+			total += seconds
+		}
+	}
+	for cwd, seconds := range terminal {
+		if matchTerminal(cwd) == projectName {
+			rows = append(rows, drillDownRow{name: cwd, typ: "terminal", seconds: seconds})
+			total += seconds
+		}
+	}
+
+	return rows, total, true, nil
 }
 
 func padRightWidth(value string, width int) string {
@@ -509,6 +589,41 @@ func renderStatsMarkdown(
 	b.WriteString(strings.Repeat("-", markdownTimeWidth))
 	b.WriteString(" |\n")
 	for _, row := range otherRows {
+		b.WriteString("| ")
+		b.WriteString(padRightWidth(row.name, markdownNameWidth))
+		b.WriteString(" | ")
+		b.WriteString(padRightWidth(row.typ, markdownTypeWidth))
+		b.WriteString(" | ")
+		b.WriteString(padLeftWidth(strconv.FormatInt(ceilMinutes(row.seconds), 10), markdownTimeWidth))
+		b.WriteString(" |\n")
+	}
+
+	return b.String()
+}
+
+func renderDrillDownMarkdown(projectName string, totalSeconds int64, rows []drillDownRow) string {
+	var b strings.Builder
+	b.WriteString("# ")
+	b.WriteString(projectName)
+	b.WriteString(" ")
+	b.WriteString(strconv.FormatInt(ceilMinutes(totalSeconds), 10))
+	b.WriteString(": Drill down\n\n")
+
+	b.WriteString("| Title/CWD")
+	b.WriteString(strings.Repeat(" ", markdownNameWidth-9))
+	b.WriteString(" | Type")
+	b.WriteString(strings.Repeat(" ", markdownTypeWidth-4))
+	b.WriteString(" | Time(min")
+	b.WriteString(strings.Repeat(" ", markdownTimeWidth-8))
+	b.WriteString(") |\n")
+	b.WriteString("| ")
+	b.WriteString(strings.Repeat("-", markdownNameWidth))
+	b.WriteString(" | ")
+	b.WriteString(strings.Repeat("-", markdownTypeWidth))
+	b.WriteString(" | ")
+	b.WriteString(strings.Repeat("-", markdownTimeWidth))
+	b.WriteString(" |\n")
+	for _, row := range rows {
 		b.WriteString("| ")
 		b.WriteString(padRightWidth(row.name, markdownNameWidth))
 		b.WriteString(" | ")
@@ -642,6 +757,102 @@ func main() {
 			"browser_active_span": browser,
 			"projects":            projectsTotals,
 			"project_others":      project_others,
+		})
+	})
+
+	mux.HandleFunc("/drill-down", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", http.MethodGet)
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+
+		date := r.URL.Query().Get("date")
+		if date == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "date is required (YYYY-MM-DD, UTC)"})
+			return
+		}
+		if _, err := time.Parse("2006-01-02", date); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "date must be YYYY-MM-DD (UTC)"})
+			return
+		}
+
+		projectName := r.URL.Query().Get("project")
+		if projectName == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "project is required"})
+			return
+		}
+
+		terminal, err := store.terminalDurationsByCWD(date)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to compute terminal stats"})
+			return
+		}
+		browser, err := store.browserDurationsByTitle(date)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to compute browser stats"})
+			return
+		}
+
+		cfg, err := loadProjectsConfig(projectsPath)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load projects config"})
+			return
+		}
+		if errors.Is(err, os.ErrNotExist) {
+			cfg = ProjectsConfig{}
+		}
+
+		rows, totalSeconds, projectExists, err := drillDownRows(terminal, browser, cfg, projectName)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid projects config"})
+			return
+		}
+		if !projectExists || len(rows) == 0 {
+			writePlainText(w, http.StatusNotFound, "not found\n")
+			return
+		}
+
+		sort.Slice(rows, func(i, j int) bool {
+			if rows[i].seconds != rows[j].seconds {
+				return rows[i].seconds > rows[j].seconds
+			}
+			if rows[i].name != rows[j].name {
+				return rows[i].name < rows[j].name
+			}
+			return rows[i].typ < rows[j].typ
+		})
+
+		mode := r.URL.Query().Get("mode")
+		if mode == "" || mode == "md" {
+			body := renderDrillDownMarkdown(projectName, totalSeconds, rows)
+			writeMarkdown(w, http.StatusOK, body)
+			return
+		}
+		if mode != "json" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "mode must be 'json' or 'md'"})
+			return
+		}
+
+		type drillDownItem struct {
+			TitleCWD string `json:"title/cwd"`
+			Type     string `json:"type"`
+			Seconds  int64  `json:"seconds"`
+		}
+
+		list := make([]drillDownItem, 0, len(rows))
+		for _, row := range rows {
+			list = append(list, drillDownItem{
+				TitleCWD: row.name,
+				Type:     row.typ,
+				Seconds:  row.seconds,
+			})
+		}
+
+		writeJSON(w, http.StatusOK, map[string]any{
+			"name":    projectName,
+			"seconds": totalSeconds,
+			"list":    list,
 		})
 	})
 
