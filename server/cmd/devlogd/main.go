@@ -208,7 +208,7 @@ func (s *eventStore) terminalDurationsByCWD(date string) (map[string]int64, erro
 	rows, err := s.db.Query(`
 SELECT cwd, MIN(start_ts), MAX(end_ts)
 FROM events
-WHERE type = 'terminal_command' AND date(start_ts) = ?
+WHERE type = 'terminal_command' AND date(start_ts, 'localtime') = ?
 GROUP BY cwd
 `, date)
 	if err != nil {
@@ -248,7 +248,7 @@ func (s *eventStore) browserDurationsByTitle(date string) (map[string]int64, err
 	rows, err := s.db.Query(`
 SELECT title, url, start_ts, end_ts
 FROM events
-WHERE type = 'browser_active_span' AND date(start_ts) = ?
+WHERE type = 'browser_active_span' AND date(start_ts, 'localtime') = ?
 `, date)
 	if err != nil {
 		return nil, err
@@ -693,11 +693,11 @@ func main() {
 
 		date := r.URL.Query().Get("date")
 		if date == "" {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "date is required (YYYY-MM-DD, UTC)"})
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "date is required (YYYY-MM-DD, local time)"})
 			return
 		}
 		if _, err := time.Parse("2006-01-02", date); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "date must be YYYY-MM-DD (UTC)"})
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "date must be YYYY-MM-DD (local time)"})
 			return
 		}
 
