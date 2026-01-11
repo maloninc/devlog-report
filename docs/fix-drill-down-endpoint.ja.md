@@ -38,11 +38,11 @@ drill-downのエンドポイントを `/drill-down` から `/stats` へ変更す
 
 
 # 実装計画
-* [ ] `/stats` にドリルダウン分岐を追加
+* [*] `/stats` にドリルダウン分岐を追加
    - `project` 指定時はドリルダウン出力（既存の drill-down ロジックを流用）
    - `mode` は md/json、未指定は md
    - 空データは `404` + `"not found"`（text/plain）
-* [ ] `/drill-down` ルートを削除
+* [*] `/drill-down` ルートを削除
    - 互換性は考慮しないためルーティング登録を削除
-* [ ] `/stats` 既存挙動の回帰確認
+* [*] `/stats` 既存挙動の回帰確認
    - `project` 未指定時の JSON/Markdown が変わらないことを確認
