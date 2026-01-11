@@ -701,6 +701,8 @@ func main() {
 			return
 		}
 
+		projectName := r.URL.Query().Get("project")
+
 		terminal, err := store.terminalDurationsByCWD(date)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to compute terminal stats"})
@@ -715,6 +717,64 @@ func main() {
 		cfg, err := loadProjectsConfig(projectsPath)
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load projects config"})
+			return
+		}
+		if errors.Is(err, os.ErrNotExist) {
+			cfg = ProjectsConfig{}
+		}
+
+		if projectName != "" {
+			rows, totalSeconds, projectExists, err := drillDownRows(terminal, browser, cfg, projectName)
+			if err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid projects config"})
+				return
+			}
+			if !projectExists || len(rows) == 0 {
+				writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+				return
+			}
+
+			sort.Slice(rows, func(i, j int) bool {
+				if rows[i].seconds != rows[j].seconds {
+					return rows[i].seconds > rows[j].seconds
+				}
+				if rows[i].name != rows[j].name {
+					return rows[i].name < rows[j].name
+				}
+				return rows[i].typ < rows[j].typ
+			})
+
+			mode := r.URL.Query().Get("mode")
+			if mode == "" || mode == "md" {
+				body := renderDrillDownMarkdown(projectName, totalSeconds, rows)
+				writeMarkdown(w, http.StatusOK, body)
+				return
+			}
+			if mode != "json" {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "mode must be 'json' or 'md'"})
+				return
+			}
+
+			type drillDownItem struct {
+				TitleCWD string `json:"title/cwd"`
+				Type     string `json:"type"`
+				Seconds  int64  `json:"seconds"`
+			}
+
+			list := make([]drillDownItem, 0, len(rows))
+			for _, row := range rows {
+				list = append(list, drillDownItem{
+					TitleCWD: row.name,
+					Type:     row.typ,
+					Seconds:  row.seconds,
+				})
+			}
+
+			writeJSON(w, http.StatusOK, map[string]any{
+				"name":    projectName,
+				"seconds": totalSeconds,
+				"list":    list,
+			})
 			return
 		}
 
@@ -757,102 +817,6 @@ func main() {
 			"browser_active_span": browser,
 			"projects":            projectsTotals,
 			"project_others":      project_others,
-		})
-	})
-
-	mux.HandleFunc("/drill-down", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			w.Header().Set("Allow", http.MethodGet)
-			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
-			return
-		}
-
-		date := r.URL.Query().Get("date")
-		if date == "" {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "date is required (YYYY-MM-DD, UTC)"})
-			return
-		}
-		if _, err := time.Parse("2006-01-02", date); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "date must be YYYY-MM-DD (UTC)"})
-			return
-		}
-
-		projectName := r.URL.Query().Get("project")
-		if projectName == "" {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "project is required"})
-			return
-		}
-
-		terminal, err := store.terminalDurationsByCWD(date)
-		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to compute terminal stats"})
-			return
-		}
-		browser, err := store.browserDurationsByTitle(date)
-		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to compute browser stats"})
-			return
-		}
-
-		cfg, err := loadProjectsConfig(projectsPath)
-		if err != nil && !errors.Is(err, os.ErrNotExist) {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to load projects config"})
-			return
-		}
-		if errors.Is(err, os.ErrNotExist) {
-			cfg = ProjectsConfig{}
-		}
-
-		rows, totalSeconds, projectExists, err := drillDownRows(terminal, browser, cfg, projectName)
-		if err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid projects config"})
-			return
-		}
-		if !projectExists || len(rows) == 0 {
-			writePlainText(w, http.StatusNotFound, "not found\n")
-			return
-		}
-
-		sort.Slice(rows, func(i, j int) bool {
-			if rows[i].seconds != rows[j].seconds {
-				return rows[i].seconds > rows[j].seconds
-			}
-			if rows[i].name != rows[j].name {
-				return rows[i].name < rows[j].name
-			}
-			return rows[i].typ < rows[j].typ
-		})
-
-		mode := r.URL.Query().Get("mode")
-		if mode == "" || mode == "md" {
-			body := renderDrillDownMarkdown(projectName, totalSeconds, rows)
-			writeMarkdown(w, http.StatusOK, body)
-			return
-		}
-		if mode != "json" {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "mode must be 'json' or 'md'"})
-			return
-		}
-
-		type drillDownItem struct {
-			TitleCWD string `json:"title/cwd"`
-			Type     string `json:"type"`
-			Seconds  int64  `json:"seconds"`
-		}
-
-		list := make([]drillDownItem, 0, len(rows))
-		for _, row := range rows {
-			list = append(list, drillDownItem{
-				TitleCWD: row.name,
-				Type:     row.typ,
-				Seconds:  row.seconds,
-			})
-		}
-
-		writeJSON(w, http.StatusOK, map[string]any{
-			"name":    projectName,
-			"seconds": totalSeconds,
-			"list":    list,
 		})
 	})
 
