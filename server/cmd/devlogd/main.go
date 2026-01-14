@@ -127,6 +127,12 @@ type eventStore struct {
 	db *sql.DB
 }
 
+type span struct {
+	minStart time.Time
+	maxEnd   time.Time
+	seconds  int64
+}
+
 type ProjectsConfig struct {
 	Projects []ProjectConfig `yaml:"projects"`
 }
@@ -248,7 +254,7 @@ WHERE schema_version = 1
 	return true, nil
 }
 
-func (s *eventStore) terminalDurationsByCWD(date string) (map[string]int64, error) {
+func (s *eventStore) terminalDurationsByCWD(date string) (map[string]span, error) {
 	rows, err := s.db.Query(`
 SELECT cwd, MIN(start_ts), MAX(end_ts)
 FROM events
@@ -260,7 +266,7 @@ GROUP BY cwd
 	}
 	defer rows.Close()
 
-	out := make(map[string]int64)
+	out := make(map[string]span)
 	for rows.Next() {
 		var cwd string
 		var minStart string
@@ -280,7 +286,11 @@ GROUP BY cwd
 		if secs < 0 {
 			secs = 0
 		}
-		out[cwd] = secs
+		out[cwd] = span{
+			minStart: startTime,
+			maxEnd:   endTime,
+			seconds:  secs,
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -394,7 +404,7 @@ func compileProjectMatchers(cfg ProjectsConfig) ([]compiledProject, error) {
 }
 
 func classifyProjects(
-	terminal map[string]int64,
+	terminal map[string]span,
 	browser map[string]int64,
 	cfg ProjectsConfig,
 ) (map[string]int64, map[string]map[string]int64, error) {
@@ -416,38 +426,82 @@ func classifyProjects(
 		return nil, nil, err
 	}
 
+	terminalAgg := make(map[string]span)
+	browserAgg := make(map[string]int64)
+	terminalOtherSum := int64(0)
+
+	updateAgg := func(agg map[string]span, name string, entry span) map[string]span {
+		current, ok := agg[name]
+		if !ok {
+			agg[name] = span{
+				minStart: entry.minStart,
+				maxEnd:   entry.maxEnd,
+			}
+			return agg
+		}
+		if entry.minStart.Before(current.minStart) {
+			current.minStart = entry.minStart
+		}
+		if entry.maxEnd.After(current.maxEnd) {
+			current.maxEnd = entry.maxEnd
+		}
+		agg[name] = current
+		return agg
+	}
+
 	assignBrowser := func(title string, seconds int64) {
 		for _, project := range compiled {
 			for _, re := range project.browserTitleRe {
 				if re.MatchString(title) {
-					projectTotals[project.name] += seconds
+					browserAgg[project.name] += seconds
 					return
 				}
 			}
 		}
-		projectTotals[otherName] += seconds
+		browserAgg[otherName] += seconds
 		project_others["browser"][title] += seconds
 	}
 
-	assignTerminal := func(cwd string, seconds int64) {
+	assignTerminal := func(cwd string, entry span) {
 		for _, project := range compiled {
 			for _, re := range project.terminalCwdRe {
 				if re.MatchString(cwd) {
-					projectTotals[project.name] += seconds
+					terminalAgg = updateAgg(terminalAgg, project.name, entry)
 					return
 				}
 			}
 		}
-		projectTotals[otherName] += seconds
-		project_others["terminal"][cwd] += seconds
+		terminalAgg = updateAgg(terminalAgg, otherName, entry)
+		project_others["terminal"][cwd] += entry.seconds
+		terminalOtherSum += entry.seconds
 	}
 
 	for title, seconds := range browser {
 		assignBrowser(title, seconds)
 	}
 
-	for cwd, seconds := range terminal {
-		assignTerminal(cwd, seconds)
+	for cwd, entry := range terminal {
+		assignTerminal(cwd, entry)
+	}
+
+	durationFromAgg := func(entry span, ok bool) int64 {
+		if !ok {
+			return 0
+		}
+		secs := int64(entry.maxEnd.Sub(entry.minStart).Seconds())
+		if secs < 0 {
+			return 0
+		}
+		return secs
+	}
+
+	for name := range projectTotals {
+		terminalEntry, okTerminal := terminalAgg[name]
+		terminalSeconds := durationFromAgg(terminalEntry, okTerminal)
+		if name == otherName {
+			terminalSeconds = terminalOtherSum
+		}
+		projectTotals[name] = terminalSeconds + browserAgg[name]
 	}
 
 	return projectTotals, project_others, nil
@@ -465,14 +519,17 @@ type otherRow struct {
 }
 
 const (
-	markdownNameWidth = 60
-	markdownTypeWidth = 8
-	markdownTimeWidth = 9
+	markdownNameWidth      = 60
+	markdownTypeWidth      = 8
+	markdownTimeStampWidth = 30
+	markdownTimeWidth      = 9
 )
 
 type drillDownRow struct {
 	name    string
 	typ     string
+	minTS   string
+	maxTS   string
 	seconds int64
 }
 
@@ -484,7 +541,7 @@ func ceilMinutes(seconds int64) int64 {
 }
 
 func drillDownRows(
-	terminal map[string]int64,
+	terminal map[string]span,
 	browser map[string]int64,
 	cfg ProjectsConfig,
 	projectName string,
@@ -529,19 +586,52 @@ func drillDownRows(
 	}
 
 	var rows []drillDownRow
-	var total int64
+	var terminalAgg span
+	var terminalOK bool
+	var browserTotal int64
 	for title, seconds := range browser {
 		if matchBrowser(title) == projectName {
-			rows = append(rows, drillDownRow{name: title, typ: "browser", seconds: seconds})
-			total += seconds
+			rows = append(rows, drillDownRow{
+				name:    title,
+				typ:     "browser",
+				minTS:   "",
+				maxTS:   "",
+				seconds: seconds,
+			})
+			browserTotal += seconds
 		}
 	}
-	for cwd, seconds := range terminal {
+	for cwd, entry := range terminal {
 		if matchTerminal(cwd) == projectName {
-			rows = append(rows, drillDownRow{name: cwd, typ: "terminal", seconds: seconds})
-			total += seconds
+			rows = append(rows, drillDownRow{
+				name:    cwd,
+				typ:     "terminal",
+				minTS:   entry.minStart.Format(time.RFC3339Nano),
+				maxTS:   entry.maxEnd.Format(time.RFC3339Nano),
+				seconds: entry.seconds,
+			})
+			if !terminalOK {
+				terminalAgg = span{minStart: entry.minStart, maxEnd: entry.maxEnd}
+				terminalOK = true
+			} else {
+				if entry.minStart.Before(terminalAgg.minStart) {
+					terminalAgg.minStart = entry.minStart
+				}
+				if entry.maxEnd.After(terminalAgg.maxEnd) {
+					terminalAgg.maxEnd = entry.maxEnd
+				}
+			}
 		}
 	}
+
+	var total int64
+	if terminalOK {
+		secs := int64(terminalAgg.maxEnd.Sub(terminalAgg.minStart).Seconds())
+		if secs > 0 {
+			total += secs
+		}
+	}
+	total += browserTotal
 
 	return rows, total, true, nil
 }
@@ -564,6 +654,14 @@ func padLeftWidth(value string, width int) string {
 		return runewidth.Truncate(value, width, "")
 	}
 	return strings.Repeat(" ", width-runewidth.StringWidth(value)) + value
+}
+
+func spansToSeconds(values map[string]span) map[string]int64 {
+	out := make(map[string]int64, len(values))
+	for key, entry := range values {
+		out[key] = entry.seconds
+	}
+	return out
 }
 
 func renderStatsMarkdown(
@@ -657,6 +755,10 @@ func renderDrillDownMarkdown(projectName string, totalSeconds int64, rows []dril
 	b.WriteString(strings.Repeat(" ", markdownNameWidth-9))
 	b.WriteString(" | Type")
 	b.WriteString(strings.Repeat(" ", markdownTypeWidth-4))
+	b.WriteString(" | Min")
+	b.WriteString(strings.Repeat(" ", markdownTimeStampWidth-3))
+	b.WriteString(" | Max")
+	b.WriteString(strings.Repeat(" ", markdownTimeStampWidth-3))
 	b.WriteString(" | Time(min")
 	b.WriteString(strings.Repeat(" ", markdownTimeWidth-8))
 	b.WriteString(") |\n")
@@ -665,6 +767,10 @@ func renderDrillDownMarkdown(projectName string, totalSeconds int64, rows []dril
 	b.WriteString(" | ")
 	b.WriteString(strings.Repeat("-", markdownTypeWidth))
 	b.WriteString(" | ")
+	b.WriteString(strings.Repeat("-", markdownTimeStampWidth))
+	b.WriteString(" | ")
+	b.WriteString(strings.Repeat("-", markdownTimeStampWidth))
+	b.WriteString(" | ")
 	b.WriteString(strings.Repeat("-", markdownTimeWidth))
 	b.WriteString(" |\n")
 	for _, row := range rows {
@@ -672,6 +778,10 @@ func renderDrillDownMarkdown(projectName string, totalSeconds int64, rows []dril
 		b.WriteString(padRightWidth(row.name, markdownNameWidth))
 		b.WriteString(" | ")
 		b.WriteString(padRightWidth(row.typ, markdownTypeWidth))
+		b.WriteString(" | ")
+		b.WriteString(padRightWidth(row.minTS, markdownTimeStampWidth))
+		b.WriteString(" | ")
+		b.WriteString(padRightWidth(row.maxTS, markdownTimeStampWidth))
 		b.WriteString(" | ")
 		b.WriteString(padLeftWidth(strconv.FormatInt(ceilMinutes(row.seconds), 10), markdownTimeWidth))
 		b.WriteString(" |\n")
@@ -805,17 +915,21 @@ func main() {
 			}
 
 			type drillDownItem struct {
-				TitleCWD string `json:"title/cwd"`
-				Type     string `json:"type"`
-				Seconds  int64  `json:"seconds"`
+				TitleCWD   string `json:"title/cwd"`
+				Type       string `json:"type"`
+				MinStartTS string `json:"min_start_ts"`
+				MaxEndTS   string `json:"max_end_ts"`
+				Seconds    int64  `json:"seconds"`
 			}
 
 			list := make([]drillDownItem, 0, len(rows))
 			for _, row := range rows {
 				list = append(list, drillDownItem{
-					TitleCWD: row.name,
-					Type:     row.typ,
-					Seconds:  row.seconds,
+					TitleCWD:   row.name,
+					Type:       row.typ,
+					MinStartTS: row.minTS,
+					MaxEndTS:   row.maxTS,
+					Seconds:    row.seconds,
 				})
 			}
 
@@ -827,27 +941,10 @@ func main() {
 			return
 		}
 
-		projectsTotals := map[string]int64{}
-		project_others := map[string]map[string]int64{
-			"browser":  {},
-			"terminal": {},
-		}
-		if err == nil {
-			projectsTotals, project_others, err = classifyProjects(terminal, browser, cfg)
-			if err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid projects config"})
-				return
-			}
-		} else {
-			projectsTotals["Other"] = 0
-			for _, seconds := range terminal {
-				projectsTotals["Other"] += seconds
-			}
-			for _, seconds := range browser {
-				projectsTotals["Other"] += seconds
-			}
-			project_others["browser"] = browser
-			project_others["terminal"] = terminal
+		projectsTotals, project_others, err := classifyProjects(terminal, browser, cfg)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid projects config"})
+			return
 		}
 
 		mode := r.URL.Query().Get("mode")
@@ -862,7 +959,7 @@ func main() {
 		}
 
 		writeJSON(w, http.StatusOK, map[string]any{
-			"terminal_command":    terminal,
+			"terminal_command":    spansToSeconds(terminal),
 			"browser_active_span": browser,
 			"projects":            projectsTotals,
 			"project_others":      project_others,
